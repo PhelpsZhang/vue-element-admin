@@ -3,58 +3,62 @@ name: Install Docker and Deploy
 on:
   push:
     branches:
-      - master # 当推送到 master 分支时触发
+      - master
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. 检出代码
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # 2. 配置 SSH
       - name: Set up SSH
         uses: webfactory/ssh-agent@v0.5.3
         with:
           ssh-private-key: ${{ secrets.DEPLOY_PRIVATE_KEY }}
 
-      # 2.5 动态获取所有目标机器的主机密钥——解决第一次连接时ssh客户端不信任该主机密钥的问题。
       - name: Add all servers to known_hosts
         run: |
           SERVERS=${{ secrets.DEPLOY_SERVER_IP }}
           for SERVER in $(echo $SERVERS | tr "," "\n"); do
-            ssh-keyscan -H $SERVER >> ~/.ssh/known_hosts
+            ssh-keyscan -H $SERVER 2>/dev/null | sort -u >> ~/.ssh/known_hosts
           done
 
+      - name: Check for code changes
+        id: check_changes
+        run: |
+          git diff --quiet HEAD^ HEAD ./src || echo "CHANGED=true" >> $GITHUB_ENV
 
-      # 3. 上传代码到目标服务器
-      - name: Upload project files
+      - name: Upload project files if changed
+        if: env.CHANGED == 'true'
         run: |
           SERVERS=${{ secrets.DEPLOY_SERVER_IP }}
           for SERVER in $(echo $SERVERS | tr "," "\n"); do
             ssh ${{ secrets.DEPLOY_USER }}@$SERVER "mkdir -p /tmp/vue-element-admin/"
-            scp -r ./* ${{ secrets.DEPLOY_USER }}@$SERVER:/tmp/vue-element-admin/
+            rsync -avz ./ ${{ secrets.DEPLOY_USER }}@$SERVER:/tmp/vue-element-admin/
           done
 
-      # 4. 安装 Docker（如果未安装）
-      - name: Install Docker on Servers
+      - name: Install Docker if missing
         run: |
           SERVERS=${{ secrets.DEPLOY_SERVER_IP }}
           for SERVER in $(echo $SERVERS | tr "," "\n"); do
-            ssh ${{ secrets.DEPLOY_USER }}@$SERVER "curl -fsSL https://get.docker.com | sh && \
-                                                     sudo usermod -aG docker ${{ secrets.DEPLOY_USER }}"
+            ssh ${{ secrets.DEPLOY_USER }}@$SERVER "if ! command -v docker &> /dev/null; then
+              curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker ${{ secrets.DEPLOY_USER }};
+            fi"
           done
 
-      # 5. 在目标服务器上构建并运行 Docker 容器
       - name: Build and Run Docker Container
         run: |
           SERVERS=${{ secrets.DEPLOY_SERVER_IP }}
           for SERVER in $(echo $SERVERS | tr "," "\n"); do
-            ssh ${{ secrets.DEPLOY_USER }}@$SERVER "cd /tmp/vue-element-admin && \
-                                                     docker build -t vue-element-admin:latest . && \
-                                                     docker stop vue-element-admin || true && \
-                                                     docker rm vue-element-admin || true && \
-                                                     docker run -d --name vue-element-admin -p 8080:8080 vue-element-admin:latest"
+            ssh ${{ secrets.DEPLOY_USER }}@$SERVER "
+              cd /tmp/vue-element-admin && \
+              if [ ! -f .docker-built ]; then
+                docker build -t vue-element-admin:latest . && touch .docker-built;
+              fi && \
+              docker stop vue-element-admin || true && \
+              docker rm vue-element-admin || true && \
+              docker run -d --name vue-element-admin -p 8080:8080 vue-element-admin:latest
+            "
           done
