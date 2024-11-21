@@ -8,7 +8,7 @@ WORKDIR /app
 COPY . .
 
 # 安装依赖并构建项目
-RUN npm install && npm run build
+RUN npm install && npm run build:prod
 
 # 使用官方 Nginx 镜像作为运行环境
 FROM nginx:alpine
